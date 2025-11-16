@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Movie Picker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fc;
+            overflow: hidden; /* Hide scrollbars due to fixed background */
+        }
+        .container {
+            min-height: 100vh;
+            position: relative; /* Needed for z-index context */
+            z-index: 5;
+        }
+        .card {
+            box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.2), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            z-index: 10; /* Ensure card is above the 3D canvas */
+            position: relative;
+        }
+        /* Container for Three.js canvas */
+        #three-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1; /* Below the card */
+            background-color: #0d1a26; /* Dark cinematic background */
+            transition: background-color 2s ease; /* Smooth transition for background color */
+        }
+        /* Custom spinner for loading state */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #10b981; /* Emerald 500 */
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- THREE.JS CONTAINER -->
+    <div id="three-container"></div>
+    <!-- END THREE.JS CONTAINER -->
+
+    <div class="container flex items-center justify-center p-4">
+        <div class="card bg-white p-8 md:p-10 rounded-xl w-full max-w-lg backdrop-blur-sm bg-opacity-90">
+            <h1 class="text-3xl font-bold text-gray-900 mb-6 text-center">🍿 Movie Night Decider</h1>
+
+            <div class="space-y-4">
+                <label for="genreInput" class="block text-sm font-medium text-gray-700">What genre are you in the mood for?</label>
+                <input type="text" id="genreInput" placeholder="e.g., Sci-Fi, Horror, Romantic Comedy"
+                       class="w-full p-3 border border-gray-300 rounded-lg focus:ring-emerald-500 focus:border-emerald-500 transition duration-150">
+
+                <button id="pickMovieButton"
+                        class="w-full flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 px-4 rounded-lg transition duration-200 ease-in-out transform hover:scale-[1.01] disabled:opacity-50 disabled:cursor-not-allowed">
+                    <span id="buttonText">Pick a Movie!</span>
+                    <div id="loadingIndicator" class="spinner ml-3 hidden"></div>
+                </button>
+            </div>
+
+            <div id="resultArea" class="mt-8 pt-6 border-t border-gray-100 hidden">
+                <h2 class="text-xl font-semibold text-gray-800 mb-3">Your Movie Suggestion:</h2>
+                
+                <div class="flex items-center justify-between mb-3">
+                    <div id="movieTitle" class="text-2xl font-bold text-emerald-600"></div>
+                    <!-- RATING DISPLAY -->
+                    <div id="movieRating" class="text-lg font-bold text-yellow-600 bg-yellow-100 px-3 py-1 rounded-full flex items-center shadow-inner">
+                        <span class="mr-1">⭐</span>
+                        <span id="ratingValue"></span>
+                    </div>
+                </div>
+
+                <p id="movieSummary" class="text-gray-700 italic mb-4"></p>
+                
+                <!-- REVIEW SECTION -->
+                <div id="reviewsContainer" class="space-y-3 mb-6">
+                    <h3 class="text-sm font-semibold text-gray-600 border-b border-gray-200 pb-1">Top Reviews:</h3>
+                    <p id="review1" class="text-sm text-gray-600 italic border-l-4 border-gray-300 pl-3"></p>
+                    <p id="review2" class="text-sm text-gray-600 italic border-l-4 border-gray-300 pl-3"></p>
+                </div>
+                
+                <!-- STREAMING PLATFORM SECTION -->
+                <div id="streamingContainer" class="mt-4 mb-6">
+                    <h3 class="text-sm font-semibold text-gray-600 border-b border-gray-200 pb-1">Streaming On:</h3>
+                    <p id="streamingPlatform" class="text-base font-medium text-indigo-700 pt-1"></p>
+                </div>
+
+                <div id="sourceContainer" class="text-xs text-gray-500 mt-4 mb-4"></div>
+                
+                <button id="suggestAnotherButton"
+                        class="w-full flex items-center justify-center bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg transition duration-200 ease-in-out">
+                    Suggest Another Movie
+                </button>
+            </div>
+
+            <div id="errorArea" class="mt-8 pt-6 border-t border-red-100 hidden">
+                <p class="text-sm text-red-600 font-medium">Sorry, an error occurred. Please try again or check your input.</p>
+            </div>
+
+        </div>
+    </div>
+
+    <script type="module">
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // --- MANDATORY FIREBASE INITIALIZATION ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let auth;
+        let db; 
+
+        if (firebaseConfig) {
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                setLogLevel('error'); 
+
+                if (initialAuthToken) {
+                    signInWithCustomToken(auth, initialAuthToken)
+                        .then(() => console.log("Firebase signed in with custom token."))
+                        .catch(error => {
+                            console.error("Custom token sign-in failed:", error);
+                            signInAnonymously(auth).then(() => console.log("Signed in anonymously instead.")).catch(e => console.error("Anonymous sign-in failed:", e));
+                        });
+                } else {
+                    signInAnonymously(auth)
+                        .then(() => console.log("Firebase signed in anonymously."))
+                        .catch(error => console.error("Anonymous sign-in failed:", error));
+                }
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+            }
+        } else {
+            console.warn("Firebase configuration not found. Running without persistence features.");
+        }
+        // --- END FIREBASE INITIALIZATION ---
+
+
+        // =========================================================================
+        // !!! IMPORTANT FIX FOR LOCAL RUNNING !!!
+        // PASTE YOUR GEMINI API KEY HERE to fix the 403 Forbidden error.
+        // Get your key from the Google AI developer site.
+        const apiKey = "AIzaSyDZm8C4NNc6LxiGIuMAuisgijyNKHggtWc"; 
+        // =========================================================================
+
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        const genreInput = document.getElementById('genreInput');
+        const pickMovieButton = document.getElementById('pickMovieButton');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const buttonText = document.getElementById('buttonText');
+        const resultArea = document.getElementById('resultArea');
+        const errorArea = document.getElementById('errorArea');
+        const movieTitle = document.getElementById('movieTitle');
+        const movieSummary = document.getElementById('movieSummary');
+        const sourceContainer = document.getElementById('sourceContainer');
+        const suggestAnotherButton = document.getElementById('suggestAnotherButton'); 
+        
+        // Elements for the rating and reviews
+        const ratingValue = document.getElementById('ratingValue');
+        const review1 = document.getElementById('review1');
+        const review2 = document.getElementById('review2');
+        // New element for streaming
+        const streamingPlatform = document.getElementById('streamingPlatform');
+
+        // Function to set loading state
+        const setLoading = (isLoading) => {
+            pickMovieButton.disabled = isLoading;
+            loadingIndicator.classList.toggle('hidden', !isLoading);
+            buttonText.textContent = isLoading ? 'Searching...' : 'Pick a Movie!';
+            errorArea.classList.add('hidden');
+        };
+
+        // Function for exponential backoff retry logic
+        async function fetchWithRetry(url, options, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.ok) {
+                        return response;
+                    } else if (response.status === 429 && i < maxRetries - 1) {
+                        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                        console.warn(`Rate limit exceeded (429). Retrying in ${delay / 1000}s...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    } else {
+                        throw new Error(`API request failed with status: ${response.status} ${response.statusText}`);
+                    }
+                } catch (error) {
+                    if (i === maxRetries - 1) {
+                        throw error;
+                    }
+                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                    console.warn(`Fetch error. Retrying in ${delay / 1000}s...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+
+        async function generateMovieSuggestion() {
+            const genre = genreInput.value.trim();
+            if (!genre) {
+                genreInput.style.borderColor = '#ef4444'; 
+                setTimeout(() => genreInput.style.borderColor = '#d1d5db', 1500); 
+                return;
+            }
+            
+            if (apiKey === "YOUR_GEMINI_API_KEY_HERE" || apiKey === "") {
+                setLoading(false);
+                errorArea.classList.remove('hidden');
+                movieTitle.textContent = "API Key Error";
+                movieSummary.textContent = "Please replace 'YOUR_GEMINI_API_KEY_HERE' in the code with your actual Gemini API key to run this application locally.";
+                resultArea.classList.remove('hidden');
+                console.error("API Key is missing or using the placeholder value.");
+                return; 
+            }
+
+            setLoading(true);
+            genreInput.style.borderColor = '#d1d5db'; 
+
+            const isFirstRequest = movieTitle.textContent === "";
+            const followUpInstruction = isFirstRequest ? "" : ` and suggest a movie that is DIFFERENT from the last suggestion (${movieTitle.textContent}) `;
+
+            // --- UPDATED SYSTEM PROMPT: Now requires 5 parts, including Streaming Availability ---
+            const systemPrompt = `You are a friendly, expert movie critic and assistant. When given a genre, perform a real-time Google Search${followUpInstruction} and suggest only ONE highly-rated and popular movie from that genre. Your output must be concise and structured with the following five parts, separated by double newlines: 
+1. The Movie Title (including the Year).
+2. The IMDb Rating in the format X.X/10 (e.g., 8.5/10).
+3. A two-sentence summary review, combining the top two positive critical sentiments.
+4. The primary Mood Tag, which must be one word only: (Action, Romance, Horror, Sci-Fi, Fantasy, Comedy, Drama).
+5. The streaming availability, like "Available on Netflix and Max" or "Available for rent/purchase on VOD platforms."
+Do NOT include any filler text, headers, or lists outside of the suggestion's structured parts.`;
+            
+            const userQuery = `Suggest a movie in the '${genre}' genre.`;
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                tools: [{ "google_search": {} }],
+                systemInstruction: {
+                    parts: [{ text: systemPrompt }]
+                },
+            };
+
+            try {
+                const response = await fetchWithRetry(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+
+                if (!candidate || !candidate.content?.parts?.[0]?.text) {
+                    throw new Error("Received an empty or malformed response from the API.");
+                }
+
+                const text = candidate.content.parts[0].text.trim();
+                const parts = text.split('\n\n').map(p => p.trim()).filter(p => p.length > 0);
+                
+                // Attempt to parse the structured output: Title, Rating, Summary Review, Mood Tag, Streaming
+                let titleYear = "Suggestion Found";
+                let rating = "N/A";
+                let reviews = ["No review sentiment available.", ""];
+                let moodTag = "Default"; // Default mood if parsing fails
+                let streaming = "Availability not found."; // New streaming variable
+
+                if (parts.length >= 5) { // Now expecting 5 parts
+                    titleYear = parts[0];
+                    rating = parts[1];
+                    
+                    // Split the two-sentence summary review into two separate reviews
+                    let reviewSentences = parts[2].split(/\.\s+/);
+                    reviews[0] = reviewSentences[0] ? (reviewSentences[0].endsWith('.') ? reviewSentences[0] : reviewSentences[0] + '.') : "No review sentiment available.";
+                    reviews[1] = reviewSentences[1] ? (reviewSentences[1].endsWith('.') ? reviewSentences[1] : reviewSentences[1] + '.') : "";
+
+                    // Extract the Mood Tag
+                    moodTag = parts[3].replace(/[.()]/g, '').trim(); 
+                    
+                    // Extract the Streaming Platform
+                    streaming = parts[4].trim();
+
+                } else if (parts.length > 0) {
+                     // Fallback for unexpected single-line output
+                    titleYear = "Suggestion Found (Title Parse Error)";
+                    rating = "N/A";
+                    reviews[0] = parts[0];
+                    moodTag = "Default";
+                    streaming = "Availability not found (Parsing failed).";
+                }
+
+                // --- UPDATE THREE.JS SCENE BASED ON MOOD ---
+                updateSceneMood(moodTag);
+                // ------------------------------------------
+
+                // --- Extract Grounding Sources ---
+                let sources = [];
+                const groundingMetadata = candidate.groundingMetadata;
+                if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                    sources = groundingMetadata.groundingAttributions
+                        .map(attribution => ({
+                            uri: attribution.web?.uri,
+                            title: attribution.web?.title,
+                        }))
+                        .filter(source => source.uri && source.title);
+                }
+
+                // --- Update UI ---
+                movieTitle.textContent = titleYear;
+                ratingValue.textContent = rating;
+                movieSummary.textContent = "See reviews below."; 
+                review1.textContent = reviews[0];
+                review2.textContent = reviews[1] || "";
+                streamingPlatform.textContent = streaming; // Display the new streaming info
+
+                sourceContainer.innerHTML = '';
+                if (sources.length > 0) {
+                    const uniqueSources = Array.from(new Set(sources.map(s => s.uri)))
+                        .map(uri => sources.find(s => s.uri === uri));
+
+                    sourceContainer.innerHTML = 'Source(s) used for suggestion: ' + uniqueSources.map(s =>
+                        `<a href="${s.uri}" target="_blank" class="text-blue-500 hover:text-blue-700 underline">${s.title.substring(0, 50)}...</a>`
+                    ).join(', ');
+                }
+
+                resultArea.classList.remove('hidden');
+
+            } catch (error) {
+                console.error("Movie suggestion generation error:", error);
+                errorArea.classList.remove('hidden');
+                resultArea.classList.add('hidden');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // --- THREE.JS DYNAMIC MOOD LOGIC ---
+        let scene, camera, renderer, particles;
+        let particleCount = 1500;
+        let particleGeometry, particleMaterial;
+        let rotationSpeed = 0.0005;
+        let colorA = new THREE.Color(0x0a1827); // Default background color
+        let colorB = new THREE.Color(0x007bff); // Default particle color (Blue)
+        let particleSize = 0.5;
+        let containerElement;
+        
+        function initThreeJS() {
+            containerElement = document.getElementById('three-container');
+
+            // Scene setup
+            scene = new THREE.Scene();
+            
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 50;
+
+            // Renderer setup
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            containerElement.appendChild(renderer.domElement);
+            renderer.setClearColor(colorA, 1); // Set initial background color
+
+            // Particle system (Starfield/Light trails)
+            particleGeometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            
+            for (let i = 0; i < particleCount; i++) {
+                positions.push(Math.random() * 400 - 200);
+                positions.push(Math.random() * 400 - 200);
+                positions.push(Math.random() * 400 - 200);
+                colors.push(colorB.r, colorB.g, colorB.b);
+            }
+
+            particleGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            particleGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+            
+            particleMaterial = new THREE.PointsMaterial({
+                size: particleSize,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+
+            particles = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particles);
+
+            // Handle window resize
+            window.addEventListener('resize', onWindowResize, false);
+            
+            // Start the animation loop
+            animate();
+        }
+
+        function onWindowResize() {
+            if (camera && renderer) {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+        }
+        
+        function updateParticleColors(newColor) {
+            const colors = particles.geometry.attributes.color.array;
+            const tempColor = new THREE.Color();
+            for (let i = 0; i < particleCount; i++) {
+                tempColor.set(newColor).offsetHSL(0, 0, Math.random() * 0.2 - 0.1); // Slight color variation
+                colors[i * 3] = tempColor.r;
+                colors[i * 3 + 1] = tempColor.g;
+                colors[i * 3 + 2] = tempColor.b;
+            }
+            particles.geometry.attributes.color.needsUpdate = true;
+        }
+
+        function updateSceneMood(mood) {
+            mood = mood.toLowerCase();
+            let newParticleColor = 0x007bff; // Default Blue
+            let newBackgroundColor = 0x0d1a26; // Dark Blue
+            let newRotationSpeed = 0.0005;
+            let newParticleSize = 0.5;
+
+            switch (mood) {
+                case 'action':
+                    newParticleColor = 0xff4500; // Orange-Red
+                    newBackgroundColor = 0x1a0a00; // Deep Crimson
+                    newRotationSpeed = 0.0015;
+                    newParticleSize = 1.0;
+                    break;
+                case 'romance':
+                    newParticleColor = 0xffa07a; // Light Salmon
+                    newBackgroundColor = 0x2c1f24; // Soft Violet
+                    newRotationSpeed = 0.0002;
+                    newParticleSize = 0.4;
+                    break;
+                case 'horror':
+                    newParticleColor = 0x228b22; // Forest Green (eerie glow)
+                    newBackgroundColor = 0x000000; // Pitch Black
+                    newRotationSpeed = 0.0001;
+                    newParticleSize = 0.7;
+                    break;
+                case 'sci-fi':
+                    newParticleColor = 0x00ffff; // Cyan
+                    newBackgroundColor = 0x051025; // Dark Navy
+                    newRotationSpeed = 0.0008;
+                    newParticleSize = 0.6;
+                    break;
+                case 'fantasy':
+                    newParticleColor = 0xdaa520; // Goldenrod
+                    newBackgroundColor = 0x1f1430; // Deep Purple
+                    newRotationSpeed = 0.0007;
+                    newParticleSize = 0.8;
+                    break;
+                case 'comedy':
+                    newParticleColor = 0xffff00; // Yellow
+                    newBackgroundColor = 0x333333; // Neutral Dark Gray
+                    newRotationSpeed = 0.0010;
+                    newParticleSize = 0.5;
+                    break;
+                case 'drama':
+                    newParticleColor = 0xaaaaaa; // Light Gray
+                    newBackgroundColor = 0x151515; // Dark Gray
+                    newRotationSpeed = 0.0004;
+                    newParticleSize = 0.5;
+                    break;
+                default:
+                    // Default / Unknown
+                    newParticleColor = 0x007bff;
+                    newBackgroundColor = 0x0d1a26;
+                    newRotationSpeed = 0.0005;
+                    newParticleSize = 0.5;
+            }
+
+            // Apply updates
+            renderer.setClearColor(new THREE.Color(newBackgroundColor), 1);
+            rotationSpeed = newRotationSpeed;
+            particles.material.size = newParticleSize;
+            particles.material.needsUpdate = true;
+            updateParticleColors(new THREE.Color(newParticleColor));
+            
+            // Smooth background color transition using CSS for the container
+            containerElement.style.backgroundColor = `#${newBackgroundColor.toString(16)}`;
+        }
+
+        const animate = () => {
+            requestAnimationFrame(animate);
+
+            // Dynamic rotation speed
+            particles.rotation.y += rotationSpeed;
+            particles.rotation.x += rotationSpeed / 2;
+            
+            // Constant movement
+            camera.position.z -= 0.01;
+            if (camera.position.z < -100) {
+                camera.position.z = 50; // Loop the camera movement
+            }
+
+            renderer.render(scene, camera);
+        };
+        
+        // Initialize Three.js when the window loads
+        window.onload = initThreeJS;
+
+        // --- EVENT LISTENERS ---
+        pickMovieButton.addEventListener('click', generateMovieSuggestion);
+        genreInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                generateMovieSuggestion();
+            }
+        });
+
+        suggestAnotherButton.addEventListener('click', generateMovieSuggestion);
+    </script>
+</body>
+</html>
